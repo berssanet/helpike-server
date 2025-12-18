@@ -59,48 +59,63 @@ def convert_video(input_path: str, output_path: str) -> Tuple[bool, str]:
 
 
 def convert_image(input_path: str, output_path: str) -> Tuple[bool, str]:
-    """Convert image to AVIF format for superior compression (40-60% smaller than JPEG).
+    """Convert image to AVIF format using NVIDIA NVENC hardware acceleration.
     
-    Uses libaom-av1 encoder with CRF mode for quality/size balance.
-    CRF values: 0 = lossless, 23 = good quality, 35 = smaller file, 63 = max compression
+    Uses av1_nvenc for GPU-accelerated encoding (same as video, but for single frame).
+    Falls back to libaom-av1 (software) if hardware encoding fails.
+    
+    CQ (Constant Quality) mode: lower = better quality, higher = more compression
+    Recommended range: 20-35 for images
     """
     try:
-        # First try AVIF conversion (best compression)
         avif_output = output_path.replace('.jpg', '.avif').replace('.jpeg', '.avif')
         
-        # CRF 32 = good balance of quality/size (adjust 28-40 as needed)
-        # Lower = better quality but larger file
-        # Higher = smaller file but lower quality
-        IMAGE_CRF = "32"
+        # Quality setting for images (CQ mode)
+        # 20 = high quality, 30 = balanced, 40 = high compression
+        IMAGE_QUALITY = "28"
         
+        # Try NVENC hardware encoder first (fastest)
         cmd = [
             '/usr/local/bin/ffmpeg', '-y',
             '-i', input_path,
-            '-c:v', 'libaom-av1',
-            '-crf', IMAGE_CRF,
-            '-b:v', '0',  # Required for CRF mode
+            '-c:v', 'av1_nvenc',
+            '-preset', 'p4',  # p4 = balanced speed/quality
+            '-cq', IMAGE_QUALITY,  # Constant Quality mode
             '-pix_fmt', 'yuv420p',
-            '-cpu-used', '4',  # Speed: 0=slowest/best, 8=fastest
-            '-row-mt', '1',  # Enable row-based multithreading
-            '-tiles', '2x2',  # Parallel tile encoding
+            '-frames:v', '1',  # Single frame for image
             avif_output
         ]
-        logger.info(f"AVIF conversion (CRF {IMAGE_CRF}): {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        logger.info(f"NVENC AVIF conversion (CQ {IMAGE_QUALITY}): {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         
         if result.returncode != 0:
-            logger.warning(f"AVIF failed, falling back to JPEG: {result.stderr}")
-            # Fallback to highly compressed JPEG
-            # -q:v scale: 1=best quality, 31=worst quality
-            # Using 8-12 for good compression with acceptable quality
-            cmd = ['/usr/local/bin/ffmpeg', '-y', '-i', input_path, '-q:v', '10', output_path]
-            logger.info(f"JPEG fallback: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                return False, result.stderr
-            return True, ""
+            logger.warning(f"NVENC failed, trying libaom-av1: {result.stderr}")
             
-        # AVIF succeeded - update output path
+            # Fallback to software encoder (libaom-av1)
+            cmd = [
+                '/usr/local/bin/ffmpeg', '-y',
+                '-i', input_path,
+                '-c:v', 'libaom-av1',
+                '-crf', '30',
+                '-b:v', '0',
+                '-pix_fmt', 'yuv420p',
+                '-cpu-used', '6',  # Faster software encoding
+                '-row-mt', '1',
+                avif_output
+            ]
+            logger.info(f"libaom-av1 fallback: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                logger.warning(f"libaom-av1 failed, falling back to JPEG: {result.stderr}")
+                # Final fallback: compressed JPEG
+                cmd = ['/usr/local/bin/ffmpeg', '-y', '-i', input_path, '-q:v', '8', output_path]
+                logger.info(f"JPEG fallback: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if result.returncode != 0:
+                    return False, result.stderr
+                return True, ""
+        
         return True, ""
     except Exception as e:
         return False, str(e)
