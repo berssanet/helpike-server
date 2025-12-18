@@ -59,77 +59,81 @@ def convert_video(input_path: str, output_path: str) -> Tuple[bool, str]:
 
 
 def convert_image(input_path: str, output_path: str) -> Tuple[bool, str]:
-    """Convert image to AVIF format with aggressive compression (~70% size reduction).
+    """Convert image to AVIF format using optimized avifenc-style preset.
     
-    Uses av1_nvenc for GPU-accelerated encoding with high compression settings.
-    Falls back to libaom-av1 (software) if hardware encoding fails.
+    Based on: avifenc --min 0 --max 15 -y 420 -a end-usage=q -a sharpness=0 -a aq-mode=2 -s 2 -j 8 -d 10
     
-    Compression settings optimized for maximum file size reduction while 
-    maintaining acceptable visual quality for mobile/web use.
+    This preset provides excellent compression (~60-80% reduction) while maintaining
+    high visual quality through careful quantizer settings and adaptive quantization.
     """
     try:
         avif_output = output_path.replace('.jpg', '.avif').replace('.jpeg', '.avif')
         
-        # HIGH COMPRESSION settings for ~70% file size reduction
-        # CQ scale: 0=lossless, 51=max compression
-        # 28 = high quality (~30% reduction)
-        # 35 = balanced (~50% reduction)  
-        # 42 = high compression (~70% reduction)
-        # 48 = aggressive (~80% reduction, visible artifacts)
-        IMAGE_CQ = "42"
-        
         # Limit max resolution to reduce file size further
-        # -1 maintains aspect ratio, 2000 = max width/height
         MAX_DIMENSION = "2000"
         
-        # Try NVENC hardware encoder first (fastest)
+        # ============================================
+        # PRIMARY: libaom-av1 with avifenc-style preset
+        # ============================================
+        # Translating avifenc parameters to FFmpeg/libaom:
+        # --min 0 --max 15 -> -qmin 0 -qmax 15 (quantizer range)
+        # -a end-usage=q   -> -b:v 0 (CQ mode)
+        # -a sharpness=0   -> -sharpness 0
+        # -a aq-mode=2     -> -aq-mode 2 (adaptive quantization)
+        # -s 2             -> -cpu-used 2 (slower = better)
+        # -d 10            -> -pix_fmt yuv420p10le (10-bit)
+        # -j 8             -> -row-mt 1 -tiles 2x2
+        
         cmd = [
             '/usr/local/bin/ffmpeg', '-y',
             '-i', input_path,
-            # Scale down large images while maintaining aspect ratio
             '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
-            '-c:v', 'av1_nvenc',
-            '-preset', 'p5',  # p5 = slower but better compression
-            '-cq', IMAGE_CQ,  # Constant Quality mode - higher = more compression
-            '-pix_fmt', 'yuv420p',
-            '-frames:v', '1',  # Single frame for image
+            '-c:v', 'libaom-av1',
+            '-b:v', '0',              # CQ mode (end-usage=q)
+            '-qmin', '0',             # min quantizer
+            '-qmax', '15',            # max quantizer (lower = higher quality)
+            '-pix_fmt', 'yuv420p10le', # 10-bit depth
+            '-cpu-used', '2',         # Speed 2 (slower = better compression)
+            '-row-mt', '1',           # Row-based multithreading
+            '-tiles', '2x2',          # Parallel tile encoding
+            '-aq-mode', '2',          # Adaptive quantization mode 2
+            '-sharpness', '0',        # No extra sharpening
+            '-aom-params', 'enable-chroma-deltaq=1:deltaq-mode=3',  # Better color handling
+            '-frames:v', '1',
             avif_output
         ]
-        logger.info(f"NVENC AVIF conversion (CQ {IMAGE_CQ}, max {MAX_DIMENSION}px): {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        logger.info(f"libaom-av1 AVIF (avifenc preset, qmax 15): {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode != 0:
-            logger.warning(f"NVENC failed, trying libaom-av1: {result.stderr}")
+            logger.warning(f"libaom-av1 failed, trying NVENC: {result.stderr}")
             
-            # Fallback to software encoder (libaom-av1) with high compression
+            # Fallback to NVENC hardware encoder (faster but less control)
             cmd = [
                 '/usr/local/bin/ffmpeg', '-y',
                 '-i', input_path,
                 '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
-                '-c:v', 'libaom-av1',
-                '-crf', '42',  # High compression CRF
-                '-b:v', '0',   # Required for CRF mode
+                '-c:v', 'av1_nvenc',
+                '-preset', 'p6',      # p6 = high quality
+                '-cq', '25',          # Conservative quality for fallback
                 '-pix_fmt', 'yuv420p',
-                '-cpu-used', '4',  # Balance speed/quality
-                '-row-mt', '1',    # Multi-threading
-                '-tiles', '2x2',   # Parallel encoding
+                '-frames:v', '1',
                 avif_output
             ]
-            logger.info(f"libaom-av1 fallback (CRF 42): {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            logger.info(f"NVENC fallback (CQ 25): {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             
             if result.returncode != 0:
-                logger.warning(f"libaom-av1 failed, falling back to JPEG: {result.stderr}")
-                # Final fallback: highly compressed JPEG
-                # q:v 15 = ~60% compression with acceptable quality
+                logger.warning(f"NVENC failed, falling back to JPEG: {result.stderr}")
+                # Final fallback: compressed JPEG
                 cmd = [
                     '/usr/local/bin/ffmpeg', '-y',
                     '-i', input_path,
                     '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
-                    '-q:v', '15',
+                    '-q:v', '10',
                     output_path
                 ]
-                logger.info(f"JPEG fallback (q:v 15): {' '.join(cmd)}")
+                logger.info(f"JPEG fallback (q:v 10): {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 if result.returncode != 0:
                     return False, result.stderr
