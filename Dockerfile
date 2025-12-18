@@ -1,30 +1,32 @@
-FROM nvidia/cuda:12.3.2-runtime-ubuntu22.04
+# Dockerfile for local development
+# For production, use: make up (runs directly on Python without Docker)
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
+FROM python:3.11-slim
 
-# Install system dependencies and FFmpeg with full codec support
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create app directory
 WORKDIR /app
 
-# Install Python dependencies
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for caching
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY *.py .
+COPY . .
 
-# Create directories for uploads and converted files
+# Create directories
 RUN mkdir -p uploads converted
 
 # Expose port
 EXPOSE 5001
 
-# Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5001"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5001/health || exit 1
+
+# Run the server
+CMD ["python", "app.py"]

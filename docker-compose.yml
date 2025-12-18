@@ -1,25 +1,28 @@
+# Docker Compose for LOCAL DEVELOPMENT ONLY
+# For production, use: make up (runs directly on Python)
+
+version: '3.8'
+
 services:
-  helpike:
-    build: .
+  helpike-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "5001:5001"
     volumes:
       - ./uploads:/app/uploads
       - ./converted:/app/converted
+      - .:/app  # Live reload for development
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    # Note: GPU support requires nvidia-docker runtime
+    # Uncomment below if you have nvidia-docker installed:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
