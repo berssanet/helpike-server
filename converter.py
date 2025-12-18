@@ -59,75 +59,76 @@ def convert_video(input_path: str, output_path: str) -> Tuple[bool, str]:
 
 
 def convert_image(input_path: str, output_path: str) -> Tuple[bool, str]:
-    """Convert image to AVIF format using NVIDIA NVENC hardware acceleration.
+    """Convert image to HEIC format using NVIDIA NVENC hardware acceleration.
     
-    Uses av1_nvenc (GPU) as primary encoder for maximum speed.
-    Falls back to libaom-av1 (software) only if GPU encoding fails.
+    Uses hevc_nvenc (GPU) as primary encoder - HEIC is native to iOS since iPhone 7.
+    Falls back to libx265 (software) if GPU encoding fails.
     
-    NVENC CQ scale: 0=lossless, 51=max compression
-    - CQ 18-22: High quality, good compression (~60-70% reduction)
-    - CQ 25-30: Balanced quality/size (~70-80% reduction)
+    HEIC provides excellent compression (~50-70% smaller than JPEG) with 
+    full iOS compatibility for Photo Library saving.
+    
+    CRF scale for HEVC: 0=lossless, 51=worst
+    - CRF 18-22: High quality, good compression
+    - CRF 23-28: Balanced quality/size (default: 23)
     """
     try:
-        avif_output = output_path.replace('.jpg', '.avif').replace('.jpeg', '.avif')
+        # Output as HEIC (iOS native format)
+        heic_output = output_path.replace('.jpg', '.heic').replace('.jpeg', '.heic').replace('.avif', '.heic')
         
         # Limit max resolution to reduce file size
         MAX_DIMENSION = "2000"
         
         # ============================================
-        # PRIMARY: av1_nvenc (GPU hardware acceleration)
+        # PRIMARY: hevc_nvenc (GPU hardware acceleration)
         # ============================================
-        # Using CQ 20 for high quality with excellent compression
-        # p6 preset = slower encoding but better compression/quality
+        # HEIC = HEVC codec in HEIF container
+        # Using CQ 23 for balanced quality/compression
         
         cmd = [
             '/usr/local/bin/ffmpeg', '-y',
             '-i', input_path,
             '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
-            '-c:v', 'av1_nvenc',
-            '-preset', 'p6',          # p6 = high quality (slower)
-            '-cq', '20',              # CQ 20 = high quality, ~60-70% compression
+            '-c:v', 'hevc_nvenc',
+            '-preset', 'p6',          # p6 = high quality
+            '-cq', '23',              # CQ 23 = balanced quality/compression
             '-pix_fmt', 'yuv420p',
+            '-tag:v', 'hvc1',         # Required for iOS compatibility
             '-frames:v', '1',
-            avif_output
+            heic_output
         ]
-        logger.info(f"NVENC av1 AVIF (CQ 20, preset p6): {' '.join(cmd)}")
+        logger.info(f"HEVC NVENC (CQ 23, iOS compatible): {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         
         if result.returncode != 0:
-            logger.warning(f"NVENC failed, trying libaom-av1: {result.stderr}")
+            logger.warning(f"hevc_nvenc failed, trying libx265: {result.stderr}")
             
-            # Fallback to software encoder (libaom-av1) with avifenc-style preset
+            # Fallback to software encoder (libx265)
             cmd = [
                 '/usr/local/bin/ffmpeg', '-y',
                 '-i', input_path,
                 '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
-                '-c:v', 'libaom-av1',
-                '-b:v', '0',
-                '-qmin', '0',
-                '-qmax', '20',
-                '-pix_fmt', 'yuv420p10le',
-                '-cpu-used', '4',     # Faster for fallback
-                '-row-mt', '1',
-                '-tiles', '2x2',
-                '-aq-mode', '2',
+                '-c:v', 'libx265',
+                '-crf', '23',
+                '-preset', 'medium',
+                '-pix_fmt', 'yuv420p',
+                '-tag:v', 'hvc1',         # Required for iOS compatibility
                 '-frames:v', '1',
-                avif_output
+                heic_output
             ]
-            logger.info(f"libaom-av1 fallback (qmax 20): {' '.join(cmd)}")
+            logger.info(f"libx265 fallback (CRF 23): {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             
             if result.returncode != 0:
-                logger.warning(f"libaom-av1 failed, falling back to JPEG: {result.stderr}")
-                # Final fallback: compressed JPEG
+                logger.warning(f"libx265 failed, falling back to JPEG: {result.stderr}")
+                # Final fallback: compressed JPEG (always works)
                 cmd = [
                     '/usr/local/bin/ffmpeg', '-y',
                     '-i', input_path,
                     '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
-                    '-q:v', '8',
+                    '-q:v', '5',  # High quality JPEG
                     output_path
                 ]
-                logger.info(f"JPEG fallback (q:v 8): {' '.join(cmd)}")
+                logger.info(f"JPEG fallback (q:v 5): {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 if result.returncode != 0:
                     return False, result.stderr
@@ -145,10 +146,10 @@ def convert_media(input_path: str, output_dir: str) -> Tuple[bool, str, str]:
         output_path = os.path.join(output_dir, f"{input_name}_av1.mp4")
         success, error = convert_video(input_path, output_path)
     else:
-        # Use AVIF for images (superior compression)
-        output_path = os.path.join(output_dir, f"{input_name}_compressed.avif")
+        # Use HEIC for images (iOS native format, excellent compression)
+        output_path = os.path.join(output_dir, f"{input_name}_compressed.heic")
         success, error = convert_image(input_path, output_path)
-        # If AVIF failed, check for JPEG fallback
+        # If HEIC failed, check for JPEG fallback
         if not success:
             jpg_path = os.path.join(output_dir, f"{input_name}_compressed.jpg")
             if os.path.exists(jpg_path):
