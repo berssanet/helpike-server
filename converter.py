@@ -1,10 +1,10 @@
 """
-converter.py - FFmpeg wrapper for AV1 media conversion with NVIDIA NVENC hardware acceleration.
+converter.py - FFmpeg wrapper for HEVC media conversion with NVIDIA NVENC hardware acceleration.
 
 Uses:
-- av1_nvenc for hardware-accelerated AV1 encoding (NVIDIA L4 Ada Lovelace)
+- hevc_nvenc for hardware-accelerated HEVC encoding (NVIDIA L4 Ada Lovelace)
+- HEVC is native to iOS since iPhone 7, ensuring Photo Library compatibility
 - Fixed bitrate mode to ensure smaller output files
-- JPEG output for images
 """
 
 import os
@@ -34,21 +34,26 @@ def get_media_type(file_path: str) -> str:
 
 
 def convert_video(input_path: str, output_path: str) -> Tuple[bool, str]:
-    """Convert video to AV1 using NVIDIA NVENC hardware encoder with fixed bitrate."""
+    """Convert video to HEVC (H.265) using NVIDIA NVENC for iOS Photo Library compatibility.
+    
+    HEVC is native to iOS since iPhone 7, ensuring the video can be saved directly
+    to the Photo Library without format issues.
+    """
     try:
-        # av1_nvenc with fixed bitrate for guaranteed compression
+        # hevc_nvenc with fixed bitrate for guaranteed compression + iOS compatibility
         cmd = [
             '/usr/local/bin/ffmpeg', '-y',
             '-i', input_path,
-            '-pix_fmt', 'yuv420p',  # Required for av1_nvenc
-            '-c:v', 'av1_nvenc', '-preset', VIDEO_PRESET,
-            '-b:v', VIDEO_BITRATE,  # Fixed bitrate
-            '-maxrate', VIDEO_BITRATE,  # Cap max rate
-            '-bufsize', '4M',  # Buffer size
+            '-pix_fmt', 'yuv420p',
+            '-c:v', 'hevc_nvenc', '-preset', VIDEO_PRESET,
+            '-b:v', VIDEO_BITRATE,     # Fixed bitrate
+            '-maxrate', VIDEO_BITRATE, # Cap max rate
+            '-bufsize', '4M',          # Buffer size
+            '-tag:v', 'hvc1',          # Required for iOS compatibility
             '-c:a', 'aac', '-b:a', '128k',
             '-movflags', '+faststart', output_path
         ]
-        logger.info(f"Running NVENC AV1: {' '.join(cmd)}")
+        logger.info(f"Running HEVC NVENC (iOS compatible): {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if result.returncode != 0:
             logger.error(f"FFmpeg error: {result.stderr}")
@@ -143,7 +148,7 @@ def convert_media(input_path: str, output_dir: str) -> Tuple[bool, str, str]:
     media_type = get_media_type(input_path)
     input_name = Path(input_path).stem
     if media_type == "video":
-        output_path = os.path.join(output_dir, f"{input_name}_av1.mp4")
+        output_path = os.path.join(output_dir, f"{input_name}_hevc.mp4")
         success, error = convert_video(input_path, output_path)
     else:
         # Use HEIC for images (iOS native format, excellent compression)
