@@ -143,17 +143,99 @@ def convert_image(input_path: str, output_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+# =============================================================================
+# AV1 ENCODERS (iOS 16+ only)
+# =============================================================================
 
-def convert_media(input_path: str, output_dir: str) -> Tuple[bool, str, str]:
+def convert_video_av1(input_path: str, output_path: str) -> Tuple[bool, str]:
+    """Convert video to AV1 using NVIDIA NVENC (best compression, iOS 16+ only)."""
+    try:
+        cmd = [
+            '/usr/local/bin/ffmpeg', '-y',
+            '-i', input_path,
+            '-pix_fmt', 'yuv420p',
+            '-c:v', 'av1_nvenc', '-preset', VIDEO_PRESET,
+            '-b:v', VIDEO_BITRATE,
+            '-maxrate', VIDEO_BITRATE,
+            '-bufsize', '4M',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart', output_path
+        ]
+        logger.info(f"Running AV1 NVENC (iOS 16+): {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            logger.error(f"FFmpeg AV1 error: {result.stderr}")
+            return False, result.stderr
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def convert_image_av1(input_path: str, output_path: str) -> Tuple[bool, str]:
+    """Convert image to AVIF using AV1 (best compression, iOS 16+ only)."""
+    try:
+        avif_output = output_path.replace('.heic', '.avif')
+        MAX_DIMENSION = "2000"
+        
+        cmd = [
+            '/usr/local/bin/ffmpeg', '-y',
+            '-i', input_path,
+            '-vf', f'scale=min({MAX_DIMENSION}\\,iw):min({MAX_DIMENSION}\\,ih):force_original_aspect_ratio=decrease',
+            '-c:v', 'av1_nvenc',
+            '-preset', 'p6',
+            '-cq', '23',
+            '-pix_fmt', 'yuv420p',
+            '-frames:v', '1',
+            avif_output
+        ]
+        logger.info(f"Running AV1 NVENC for AVIF (iOS 16+): {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            logger.warning(f"AV1 failed, falling back to HEVC: {result.stderr}")
+            # Fallback to HEVC
+            return convert_image(input_path, output_path)
+        
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def convert_media(input_path: str, output_dir: str, use_av1: bool = False) -> Tuple[bool, str, str]:
+    """Convert media file using appropriate encoder based on iOS version.
+    
+    Args:
+        input_path: Path to the input media file
+        output_dir: Directory to save converted file
+        use_av1: If True, use AV1/AVIF (iOS 16+). If False, use HEVC/HEIC (iOS < 16).
+    
+    Returns:
+        Tuple of (success, output_path, error_message)
+    """
     media_type = get_media_type(input_path)
     input_name = Path(input_path).stem
+    
     if media_type == "video":
-        output_path = os.path.join(output_dir, f"{input_name}_hevc.mp4")
-        success, error = convert_video(input_path, output_path)
+        if use_av1:
+            output_path = os.path.join(output_dir, f"{input_name}_av1.mp4")
+            success, error = convert_video_av1(input_path, output_path)
+        else:
+            output_path = os.path.join(output_dir, f"{input_name}_hevc.mp4")
+            success, error = convert_video(input_path, output_path)
     else:
-        # Use HEIC for images (iOS native format, excellent compression)
-        output_path = os.path.join(output_dir, f"{input_name}_compressed.heic")
-        success, error = convert_image(input_path, output_path)
+        if use_av1:
+            output_path = os.path.join(output_dir, f"{input_name}_compressed.avif")
+            success, error = convert_image_av1(input_path, output_path)
+            # Check if AVIF was created
+            if success and os.path.exists(output_path):
+                return True, output_path, ""
+            # Fallback to HEIC
+            output_path = os.path.join(output_dir, f"{input_name}_compressed.heic")
+            success, error = convert_image(input_path, output_path)
+        else:
+            output_path = os.path.join(output_dir, f"{input_name}_compressed.heic")
+            success, error = convert_image(input_path, output_path)
+        
         # If HEIC failed, check for JPEG fallback
         if not success:
             jpg_path = os.path.join(output_dir, f"{input_name}_compressed.jpg")
@@ -161,5 +243,5 @@ def convert_media(input_path: str, output_dir: str) -> Tuple[bool, str, str]:
                 output_path = jpg_path
                 success = True
                 error = ""
+    
     return (True, output_path, "") if success else (False, "", error)
-

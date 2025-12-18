@@ -48,13 +48,19 @@ app.add_middleware(
 )
 
 
-def process_conversion(job_id: str, input_path: str) -> None:
-    """Background task to convert media file."""
+def process_conversion(job_id: str, input_path: str, use_av1: bool = False) -> None:
+    """Background task to convert media file.
+    
+    Args:
+        job_id: Unique job identifier
+        input_path: Path to the uploaded file
+        use_av1: If True, use AV1 codec (iOS 16+). If False, use HEVC (iOS < 16).
+    """
     try:
-        logger.info(f"Starting conversion for job {job_id}")
+        logger.info(f"Starting conversion for job {job_id} (encoder: {'AV1' if use_av1 else 'HEVC'})")
         job_manager.update_status(job_id, JobStatus.PROCESSING)
         
-        success, output_path, error = convert_media(input_path, str(CONVERTED_DIR))
+        success, output_path, error = convert_media(input_path, str(CONVERTED_DIR), use_av1)
         
         if success:
             converted_size = os.path.getsize(output_path)
@@ -72,13 +78,20 @@ def process_conversion(job_id: str, input_path: str) -> None:
 @app.post("/upload")
 async def upload_media(
     background_tasks: BackgroundTasks,
-    media: UploadFile = File(...)
+    media: UploadFile = File(...),
+    ios_version: str = None
 ):
     """
-    Upload a media file for AV1 conversion.
+    Upload a media file for HEVC/AV1 conversion.
     
     Accepts any video or image file via multipart form data.
     Returns a job_id to track conversion progress.
+    
+    Args:
+        media: The media file to convert
+        ios_version: Optional iOS version string (e.g., "17.0", "15.5")
+                     iOS 16+ uses AV1 for better compression
+                     iOS < 16 uses HEVC for compatibility
     """
     try:
         # Save uploaded file
@@ -89,11 +102,22 @@ async def upload_media(
             f.write(content)
         
         original_size = len(content)
-        logger.info(f"Received upload: {media.filename} ({original_size} bytes)")
+        
+        # Parse iOS version to determine encoder
+        use_av1 = False
+        if ios_version:
+            try:
+                major_version = int(ios_version.split('.')[0])
+                use_av1 = major_version >= 16
+                logger.info(f"iOS version: {ios_version} (major: {major_version}) -> {'AV1' if use_av1 else 'HEVC'}")
+            except (ValueError, IndexError):
+                logger.warning(f"Could not parse iOS version: {ios_version}, defaulting to HEVC")
+        
+        logger.info(f"Received upload: {media.filename} ({original_size} bytes), encoder: {'AV1' if use_av1 else 'HEVC'}")
         
         # Create job and start background conversion
         job_id = job_manager.create_job(str(file_path), original_size)
-        background_tasks.add_task(process_conversion, job_id, str(file_path))
+        background_tasks.add_task(process_conversion, job_id, str(file_path), use_av1)
         
         return {"job_id": job_id}
         
